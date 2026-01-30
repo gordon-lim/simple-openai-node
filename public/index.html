@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple OpenAI Typescript Chat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Simple OpenAI Typescript Chat</h1>
+        <div class="username-container">
+            <label for="usernameInput">Username (for testing):</label>
+            <input
+                type="text"
+                id="usernameInput"
+                placeholder="Enter username..."
+                autocomplete="off"
+                value="User"
+            />
+        </div>
+        <div class="chat-container">
+            <div id="messages" class="messages"></div>
+            <div class="input-container">
+                <div class="input-row">
+                    <input
+                        type="text"
+                        id="messageInput"
+                        placeholder="Type your message..."
+                        autocomplete="off"
+                    />
+                    <input
+                        type="file"
+                        id="imageInput"
+                        accept="image/*"
+                        style="display: none;"
+                    />
+                    <button id="imageButton" class="icon-button" title="Attach image">📎</button>
+                    <button id="sendButton">Send</button>
+                </div>
+                <div id="imagePreview" class="image-preview" style="display: none;">
+                    <img id="previewImg" src="" alt="Preview">
+                    <button id="removeImage" class="remove-image">×</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
