@@ -3,8 +3,17 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { Raindrop } from 'raindrop-ai';
 
 dotenv.config();
+
+const raindrop = new Raindrop({
+  writeKey: process.env.RAINDROP_WRITE_KEY!,
+  wizardSession: "__WIZARD_SESSION_UUID__",
+  instrumentModules: {
+    openAI: OpenAI,
+  },
+});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -104,6 +113,17 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
       }
     });
 
+    // Start Raindrop interaction
+    const interaction = raindrop.begin({
+      eventId: messageId,
+      event: 'chat_message',
+      userId: username || 'anonymous',
+      input: message || 'What is in this image?',
+      model: model,
+      convoId: conversationIdToUse,
+      attachments: image ? [{ type: 'image', value: image, role: 'input' }] : undefined,
+    });
+
     // Generate response using OpenAI
     const completion = await openai.chat.completions.create({
       model: model,
@@ -111,6 +131,9 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
     });
 
     const text = completion.choices[0].message.content || '';
+
+    // Finish Raindrop interaction
+    interaction.finish({ output: text });
 
     // Add assistant response to history
     messages.push({ role: 'assistant', content: text });
@@ -130,7 +153,7 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
   }
 });
 
-app.post('/api/feedback', (req: Request<{}, {}, FeedbackRequest>, res: Response) => {
+app.post('/api/feedback', async (req: Request<{}, {}, FeedbackRequest>, res: Response) => {
   try {
     const { messageId, feedback, username, conversationId } = req.body;
 
@@ -145,6 +168,14 @@ app.post('/api/feedback', (req: Request<{}, {}, FeedbackRequest>, res: Response)
       timestamp: Date.now(),
     });
 
+    // Track feedback signal with Raindrop
+    await raindrop.trackSignal({
+      eventId: messageId,
+      name: feedback === 'up' ? 'thumbs_up' : 'thumbs_down',
+      type: 'feedback',
+      sentiment: feedback === 'up' ? 'POSITIVE' : 'NEGATIVE',
+    });
+
     console.log(`[${new Date().toISOString()}] Feedback: ${feedback} from ${username || 'Anonymous'} on message ${messageId} (conversation: ${conversationId})`);
 
     res.json({ success: true });
@@ -154,6 +185,25 @@ app.post('/api/feedback', (req: Request<{}, {}, FeedbackRequest>, res: Response)
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down...');
+  await raindrop.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down...');
+  await raindrop.close();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });
