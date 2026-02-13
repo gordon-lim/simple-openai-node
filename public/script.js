@@ -12,7 +12,7 @@ const previewImg = document.getElementById('previewImg');
 const removeImageBtn = document.getElementById('removeImage');
 const usernameInput = document.getElementById('usernameInput');
 
-function addMessage(content, role, imageData = null, messageId = null) {
+function addMessage(content, role, imageData = null, messageId = null, toolCalls = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
     if (messageId) {
@@ -33,6 +33,19 @@ function addMessage(content, role, imageData = null, messageId = null) {
         img.className = 'message-image';
         img.alt = 'Attached image';
         contentDiv.appendChild(img);
+    }
+
+    // Add tool calls if present (before the text content)
+    if (toolCalls && toolCalls.length > 0) {
+        const toolCallsContainer = document.createElement('div');
+        toolCallsContainer.className = 'tool-calls-container';
+
+        toolCalls.forEach((toolCall, index) => {
+            const toolCallDiv = createToolCallBubble(toolCall, index);
+            toolCallsContainer.appendChild(toolCallDiv);
+        });
+
+        contentDiv.appendChild(toolCallsContainer);
     }
 
     // Add text content
@@ -69,6 +82,52 @@ function addMessage(content, role, imageData = null, messageId = null) {
 
     // Scroll to bottom
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function createToolCallBubble(toolCall, index) {
+    const bubbleDiv = document.createElement('div');
+    bubbleDiv.className = 'tool-call-bubble';
+
+    const header = document.createElement('div');
+    header.className = 'tool-call-header';
+    header.innerHTML = `
+        <span class="tool-call-icon">🔧</span>
+        <span class="tool-call-name">${toolCall.name}</span>
+        <span class="tool-call-toggle">▼</span>
+    `;
+
+    const content = document.createElement('div');
+    content.className = 'tool-call-content';
+    content.style.display = 'none';
+
+    const argsSection = document.createElement('div');
+    argsSection.className = 'tool-call-section';
+    argsSection.innerHTML = `
+        <div class="tool-call-section-title">Arguments:</div>
+        <pre class="tool-call-code">${JSON.stringify(toolCall.arguments, null, 2)}</pre>
+    `;
+
+    const resultSection = document.createElement('div');
+    resultSection.className = 'tool-call-section';
+    resultSection.innerHTML = `
+        <div class="tool-call-section-title">Result:</div>
+        <pre class="tool-call-code">${JSON.stringify(toolCall.result, null, 2)}</pre>
+    `;
+
+    content.appendChild(argsSection);
+    content.appendChild(resultSection);
+
+    // Toggle functionality
+    header.addEventListener('click', () => {
+        const isExpanded = content.style.display === 'block';
+        content.style.display = isExpanded ? 'none' : 'block';
+        header.querySelector('.tool-call-toggle').textContent = isExpanded ? '▼' : '▲';
+    });
+
+    bubbleDiv.appendChild(header);
+    bubbleDiv.appendChild(content);
+
+    return bubbleDiv;
 }
 
 function addLoadingMessage() {
@@ -139,9 +198,9 @@ async function sendMessage() {
         // Update conversation ID
         conversationId = data.conversationId;
 
-        // Remove loading and add assistant response with message ID
+        // Remove loading and add assistant response with message ID and tool calls
         removeLoadingMessage();
-        addMessage(data.response, 'assistant', null, data.messageId);
+        addMessage(data.response, 'assistant', null, data.messageId, data.toolCalls);
 
         // Clear the image
         clearImage();

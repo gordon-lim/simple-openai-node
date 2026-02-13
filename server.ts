@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 
 dotenv.config();
 
@@ -31,10 +31,17 @@ interface ChatRequest {
   image?: string;
 }
 
+interface ToolCallInfo {
+  name: string;
+  arguments: any;
+  result: any;
+}
+
 interface ChatResponse {
   response: string;
   conversationId: string;
   messageId: string;
+  toolCalls?: ToolCallInfo[];
 }
 
 interface FeedbackRequest {
@@ -49,6 +56,144 @@ const conversations = new Map<string, StoredMessage[]>();
 
 // Store feedback data (in production, use a database)
 const feedbackStore = new Map<string, { feedback: 'up' | 'down'; username?: string; timestamp: number }>();
+
+// Define mock tools for the agent
+const mockTools: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: 'Get the current weather for a specific location',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: {
+            type: 'string',
+            description: 'The city and state, e.g. San Francisco, CA',
+          },
+          unit: {
+            type: 'string',
+            enum: ['celsius', 'fahrenheit'],
+            description: 'The temperature unit to use',
+          },
+        },
+        required: ['location'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'calculate',
+      description: 'Perform a mathematical calculation',
+      parameters: {
+        type: 'object',
+        properties: {
+          expression: {
+            type: 'string',
+            description: 'The mathematical expression to evaluate, e.g. "2 + 2" or "sqrt(16)"',
+          },
+        },
+        required: ['expression'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_current_time',
+      description: 'Get the current time for a specific timezone',
+      parameters: {
+        type: 'object',
+        properties: {
+          timezone: {
+            type: 'string',
+            description: 'The timezone, e.g. "America/New_York", "Europe/London", or "Asia/Tokyo"',
+          },
+        },
+        required: ['timezone'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_database',
+      description: 'Search a mock database for user information',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The search query',
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum number of results to return',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+];
+
+// Mock tool implementations
+function executeMockTool(toolName: string, args: any): string {
+  switch (toolName) {
+    case 'get_weather':
+      const { location, unit = 'fahrenheit' } = args;
+      const temp = unit === 'celsius' ? 22 : 72;
+      return JSON.stringify({
+        location,
+        temperature: temp,
+        unit,
+        condition: 'Partly cloudy',
+        humidity: 65,
+        wind_speed: 10,
+      });
+
+    case 'calculate':
+      try {
+        // Simple eval for demo purposes (DO NOT use in production!)
+        const result = eval(args.expression);
+        return JSON.stringify({ expression: args.expression, result });
+      } catch (error) {
+        return JSON.stringify({ error: 'Invalid expression' });
+      }
+
+    case 'get_current_time':
+      const { timezone = 'UTC' } = args;
+      const now = new Date();
+      const timeString = now.toLocaleString('en-US', { timeZone: timezone });
+      return JSON.stringify({
+        timezone,
+        current_time: timeString,
+        unix_timestamp: now.getTime(),
+      });
+
+    case 'search_database':
+      const { query, limit = 5 } = args;
+      // Mock database results
+      const mockResults = [
+        { id: 1, name: 'Alice Johnson', email: 'alice@example.com', role: 'Engineer' },
+        { id: 2, name: 'Bob Smith', email: 'bob@example.com', role: 'Designer' },
+        { id: 3, name: 'Carol Williams', email: 'carol@example.com', role: 'Manager' },
+        { id: 4, name: 'David Brown', email: 'david@example.com', role: 'Engineer' },
+        { id: 5, name: 'Eve Davis', email: 'eve@example.com', role: 'Product Manager' },
+      ];
+      const filtered = mockResults
+        .filter(item =>
+          item.name.toLowerCase().includes(query.toLowerCase()) ||
+          item.role.toLowerCase().includes(query.toLowerCase())
+        )
+        .slice(0, limit);
+      return JSON.stringify({ results: filtered, total: filtered.length });
+
+    default:
+      return JSON.stringify({ error: 'Unknown tool' });
+  }
+}
 
 app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: Response<ChatResponse | { error: string }>) => {
   try {
@@ -104,15 +249,67 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
       }
     });
 
-    // Generate response using OpenAI
-    const completion = await openai.chat.completions.create({
+    // Generate response using OpenAI with tool support
+    let completion = await openai.chat.completions.create({
       model: model,
       messages: openAIMessages,
+      tools: mockTools,
+      tool_choice: 'auto',
     });
 
-    const text = completion.choices[0].message.content || '';
+    let responseMessage = completion.choices[0].message;
+    const toolCallsInfo: ToolCallInfo[] = [];
 
-    // Add assistant response to history
+    // Handle tool calls if present
+    while (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+      // Add the assistant's message with tool calls to the conversation
+      messages.push({
+        role: 'assistant',
+        content: responseMessage.content || '',
+      });
+
+      // Add tool calls to the messages array for OpenAI
+      openAIMessages.push(responseMessage as any);
+
+      // Execute each tool call
+      for (const toolCall of responseMessage.tool_calls) {
+        const toolName = toolCall.function.name;
+        const toolArgs = JSON.parse(toolCall.function.arguments);
+
+        console.log(`[${new Date().toISOString()}] Tool Call: ${toolName} with args:`, toolArgs);
+
+        const toolResult = executeMockTool(toolName, toolArgs);
+        const parsedResult = JSON.parse(toolResult);
+
+        // Store tool call info for response
+        toolCallsInfo.push({
+          name: toolName,
+          arguments: toolArgs,
+          result: parsedResult,
+        });
+
+        // Add tool result to messages
+        openAIMessages.push({
+          role: 'tool',
+          content: toolResult,
+          tool_call_id: toolCall.id,
+        });
+      }
+
+      // Get the next response from OpenAI
+      completion = await openai.chat.completions.create({
+        model: model,
+        messages: openAIMessages,
+        tools: mockTools,
+        tool_choice: 'auto',
+      });
+
+      responseMessage = completion.choices[0].message;
+    }
+
+    const text = responseMessage.content || '';
+
+    // Add final assistant response to history
     messages.push({ role: 'assistant', content: text });
 
     // Store updated conversation
@@ -122,6 +319,7 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
       response: text,
       conversationId: conversationIdToUse,
       messageId,
+      toolCalls: toolCallsInfo.length > 0 ? toolCallsInfo : undefined,
     });
   } catch (error) {
     console.error('Error:', error);
