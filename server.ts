@@ -3,8 +3,15 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import { randomUUID } from 'crypto';
+import { Raindrop } from 'raindrop-ai';
 
 dotenv.config();
+
+const raindrop = new Raindrop({
+  writeKey: process.env.RAINDROP_WRITE_KEY!,
+  wizardSession: '28e437d9-218f-47f6-8533-808a8bfc6c1a',
+});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -210,8 +217,18 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
     const conversationIdToUse = conversationId || `conv_${Date.now()}`;
     const messages = conversations.get(conversationIdToUse) || [];
 
-    // Generate message ID for feedback
-    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Generate message ID for feedback (also used as Raindrop eventId)
+    const messageId = randomUUID();
+
+    // Start Raindrop interaction
+    const interaction = raindrop.begin({
+      eventId: messageId,
+      event: 'chat_message',
+      userId: username || 'Anonymous',
+      input: message || '(image)',
+      model: 'gpt-4o-mini',
+      convoId: conversationIdToUse,
+    });
 
     // Add user message to history
     let userContent: MessageContent;
@@ -225,6 +242,11 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
           image_url: { url: image }
         }
       ];
+
+      // Track image attachment with Raindrop
+      interaction.addAttachments([
+        { type: 'image', value: image, role: 'input' }
+      ]);
     } else {
       userContent = message;
     }
@@ -278,7 +300,16 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
 
         console.log(`[${new Date().toISOString()}] Tool Call: ${toolName} with args:`, toolArgs);
 
-        const toolResult = executeMockTool(toolName, toolArgs);
+        // Track tool execution with Raindrop
+        const toolResult = await interaction.withTool(
+          {
+            name: toolName,
+            inputParameters: toolArgs,
+          },
+          async () => {
+            return executeMockTool(toolName, toolArgs);
+          }
+        );
         const parsedResult = JSON.parse(toolResult);
 
         // Store tool call info for response
@@ -309,6 +340,9 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
 
     const text = responseMessage.content || '';
 
+    // Finish Raindrop interaction
+    interaction.finish({ output: text });
+
     // Add final assistant response to history
     messages.push({ role: 'assistant', content: text });
 
@@ -328,7 +362,7 @@ app.post('/api/chat', async (req: Request<{}, ChatResponse, ChatRequest>, res: R
   }
 });
 
-app.post('/api/feedback', (req: Request<{}, {}, FeedbackRequest>, res: Response) => {
+app.post('/api/feedback', async (req: Request<{}, {}, FeedbackRequest>, res: Response) => {
   try {
     const { messageId, feedback, username, conversationId } = req.body;
 
@@ -341,6 +375,13 @@ app.post('/api/feedback', (req: Request<{}, {}, FeedbackRequest>, res: Response)
       feedback,
       username,
       timestamp: Date.now(),
+    });
+
+    // Track feedback signal with Raindrop
+    await raindrop.trackSignal({
+      eventId: messageId,
+      name: feedback === 'up' ? 'thumbs_up' : 'thumbs_down',
+      sentiment: feedback === 'up' ? 'POSITIVE' : 'NEGATIVE',
     });
 
     console.log(`[${new Date().toISOString()}] Feedback: ${feedback} from ${username || 'Anonymous'} on message ${messageId} (conversation: ${conversationId})`);
